@@ -1040,25 +1040,63 @@
             let cancelled = false;
 
             function backendConfigured() {
-                return BACKEND && /^https?:\/\//.test(BACKEND) && !/YOUR-BACKEND/.test(BACKEND);
+                if (!BACKEND || !/^https?:\/\//.test(BACKEND) || /YOUR-BACKEND/.test(BACKEND)) return false;
+                // An https:// page cannot call an http:// backend (mixed content) —
+                // the browser blocks it as a network error.
+                if (location.protocol === 'https:' && /^http:\/\//.test(BACKEND) && !/^http:\/\/(localhost|127\.)/.test(BACKEND)) return false;
+                return true;
             }
 
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+            /* One health-check attempt. Returns:
+                 "ok"          — backend awake and readable (CORS fine)
+                 "cors"        — backend IS responding, but this site's origin
+                                  is not allowed by the backend's CORS config
+                 "unreachable" — no response at all (waking up, or blocked)   */
+            async function checkBackend() {
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(), 12000);
+                try {
+                    const res = await fetch(BACKEND + '/health', { cache: 'no-store', signal: ctrl.signal });
+                    const j = await res.json().catch(() => null);
+                    if (res.ok && j && j.ok) return 'ok';
+                    return 'cors'; // responded, but not with a healthy payload
+                } catch (err) {
+                    // Request failed: either network-level or CORS-blocked.
+                    // A no-cors ping succeeds if the server sent ANY response,
+                    // no matter what the CORS headers say.
+                    try {
+                        const ping = await fetch(BACKEND + '/health', { mode: 'no-cors', cache: 'no-store', signal: ctrl.signal });
+                        if (ping) return 'cors';
+                    } catch (e) { /* ping failed too */ }
+                    return 'unreachable';
+                } finally {
+                    clearTimeout(timer);
+                }
+            }
+
             async function waitForBackend(timeoutMs, onStatus) {
                 const started = Date.now();
-                let attempt = 0;
+                let attempt = 0, corsHits = 0;
                 while (Date.now() - started < timeoutMs && !cancelled) {
                     attempt++;
-                    if (onStatus) onStatus(attempt, Date.now() - started);
-                    try {
-                        const res = await fetch(BACKEND + "/health", { cache: "no-store" });
-                        if (res.ok) {
-                            const j = await res.json();
-                            if (j && j.ok) return true;
-                        }
-                    } catch (err) { /* backend still waking up */ }
+                    const state = await checkBackend();
+                    if (state === 'ok') return true;
+                    if (state === 'cors') {
+                        corsHits++;
+                        if (onStatus) onStatus(attempt, Date.now() - started, corsHits >= 4);
+                    } else {
+                        corsHits = 0;
+                        if (onStatus) onStatus(attempt, Date.now() - started, false);
+                    }
                     await sleep(3000);
+                }
+                if (corsHits >= 4) {
+                    launchStatus.innerHTML = 'The backend is <b>responding</b>, but it is not allowing this site. ' +
+                        'On Render, set <b>ALLOWED_ORIGINS</b> to include <b>' + location.origin + '</b> ' +
+                        '(exactly, no trailing slash), save, and wait for the redeploy.';
+                    return false;
                 }
                 return false;
             }
@@ -1071,13 +1109,17 @@
             async function launchInline() {
                 overlay.classList.add('active');
                 launchStatus.textContent = 'Contacting backend…';
-                const healthy = await waitForBackend(180000, (attempt, elapsed) => {
-                    launchStatus.textContent = 'Backend waking up… (attempt ' + attempt + ', ' + Math.round(elapsed / 1000) + 's elapsed)';
+                const healthy = await waitForBackend(180000, (attempt, elapsed, corsBlocked) => {
+                    if (corsBlocked) {
+                        launchStatus.innerHTML = 'Backend is responding, but this site is not on its allow-list. On Render, set ALLOWED_ORIGINS to include <b>' + location.origin + '</b> (no trailing slash), then redeploy.';
+                    } else {
+                        launchStatus.textContent = 'Backend waking up… (attempt ' + attempt + ', ' + Math.round(elapsed / 1000) + 's elapsed)';
+                    }
                 });
                 overlay.classList.remove('active');
                 if (cancelled) return;
                 if (!healthy) {
-                    toast('The backend did not respond within 3 minutes. It may still be waking up on the Render free tier — try again shortly.', true);
+                    toast('Could not reach ' + BACKEND + ' — check the URL in config.js, the backend\u2019s CORS allow-list (ALLOWED_ORIGINS on Render must include ' + location.origin + '), or that the Render service is running.', true);
                     return;
                 }
                 // Replace this tab entirely with the proxy browser.
@@ -1087,8 +1129,12 @@
             statusLink.addEventListener('click', (e) => {
                 e.preventDefault();
                 if (!backendConfigured()) {
-                    openModal('Relay not configured', [
-                        'config.js still contains the placeholder backend URL. Open config.js next to index.html and set TASKFLOW_BACKEND to your Render service URL, then redeploy the site.',
+                    const mixed = location.protocol === 'https:' && /^http:\/\//.test(BACKEND) && !/^http:\/\/(localhost|127\.)/.test(BACKEND);
+                    openModal('Relay not configured', mixed ? [
+                        'config.js has an http:// backend URL, but this site is served over https:// — browsers block that as mixed content.',
+                        'Open config.js and change the URL to https://tabbrowse-back.onrender.com (https, not http), then redeploy the site.'
+                    ] : [
+                        'config.js still contains the placeholder backend URL. Open config.js and set TASKFLOW_BACKEND to your Render service URL (https://…onrender.com, no trailing slash), then redeploy the site.',
                         'See the deployment instructions that came with TaskFlow Relay for the exact steps.'
                     ]);
                     return;

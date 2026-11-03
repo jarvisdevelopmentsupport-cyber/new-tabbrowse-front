@@ -416,7 +416,17 @@ body {
       if (!res.ok) return false;
       const j = await res.json();
       return !!j.ok;
-    } catch { return false; }
+    } catch {
+      // If the CORS-mode read failed, fall back to a no-cors ping:
+      // it succeeds whenever the server sends ANY response, regardless
+      // of CORS headers. Not enough to read /health, but it proves the
+      // backend is awake — the bundle loads below will surface any
+      // CORS problem with an exact fix if there is one.
+      try {
+        await fetch(BACKEND + "/health", { mode: "no-cors", cache: "no-store" });
+        return true;
+      } catch { return false; }
+    }
   }
 
   async function waitForBackend(timeoutMs, onStatus) {
@@ -534,7 +544,7 @@ body {
       await loadScript(BACKEND + "/scram/scramjet.js");            // sets globalThis.$scramjet
       await loadScript(BACKEND + "/controller/controller.api.js");  // sets globalThis.$scramjetController
     } catch (err) {
-      return bootFail("Could not load the Scramjet bundles from the backend. Check that the backend is deployed and that ALLOWED_ORIGINS includes this site's origin.", err);
+      return bootFail("Could not load the Scramjet bundles from the backend. Check that the backend is deployed and that ALLOWED_ORIGINS on Render includes this site's origin exactly: " + location.origin + " (no trailing slash).", err);
     }
 
     // 3. Import the libcurl (wisp) transport module.
