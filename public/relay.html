@@ -650,8 +650,8 @@ body {
   });
 
   $("btn-exit").addEventListener("click", () => {
-    try { window.top.close(); } catch {}
-    setTimeout(() => { try { location.replace("about:blank"); } catch {} }, 150);
+    // Return to the TaskFlow homepage in this same tab.
+    try { location.replace(new URL("index.html", location.href).href); } catch {}
   });
 
   statusDot.addEventListener("click", async () => {

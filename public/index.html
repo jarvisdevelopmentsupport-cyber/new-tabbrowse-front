@@ -1021,19 +1021,13 @@
            ================================================================
            1. Clicking Status shows the loading experience ("Initializing
               TaskFlow Relay" + free-tier wake-up message) and starts
-              REAL health checks against the Scramjet backend.
-           2. A new about:blank browsing context is opened synchronously
-              inside the click (popup-blocker safe), and that context
-              is given a self-contained TaskFlow-styled launcher page
-              which performs the health checks and then iframes
-              relay.html — the full proxy browser.
-           3. The original homepage is then completely replaced
-              (location.replace("about:blank")) so it is fully
-              unloaded — saving memory and CPU. No overlay, no hidden
-              homepage.
-           4. If popups are blocked, the closest reliable alternative
-              is used: the health check runs in this tab and the
-              whole tab is replaced by relay.html.
+              REAL health checks against the Scramjet backend — run
+              from this page's own origin, so the backend's CORS
+              policy (ALLOWED_ORIGINS) matches.
+           2. When the backend is awake, this tab is replaced entirely
+              by relay.html — the full proxy browser. The homepage
+              document is fully unloaded (saving memory and CPU).
+              No new tabs, windows, or popups are opened.
            ================================================================ */
         (function relayLauncher() {
             const BACKEND = String(window.TASKFLOW_BACKEND || "").replace(/\/+$/, "");
@@ -1069,137 +1063,11 @@
                 return false;
             }
 
-            /* Self-contained launcher document written into the about:blank
-               popup. It runs the health checks, then replaces itself with
-               a fullscreen iframe of relay.html. */
-            function buildLauncherDoc() {
-                return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TaskFlow Relay</title>
-<style>
-  :root { --void:#0b0b12; --primary:#9333ea; --primary-bright:#d8b4fe; --accent:#22d3ee;
-    --text:#f8fafc; --muted:#8b8fa8; --border:rgba(147,51,234,.3);
-    --grad:linear-gradient(100deg,#22d3ee,#9333ea 45%,#f0abfc 75%); }
-  * { box-sizing:border-box; margin:0; padding:0; font-family:-apple-system,'Segoe UI',Roboto,sans-serif; }
-  html,body { height:100%; }
-  body { background:
-      radial-gradient(700px 340px at 50% -10%, rgba(147,51,234,.2), transparent 70%), var(--void);
-    color:var(--text); display:flex; align-items:center; justify-content:center; overflow:hidden; }
-  .screen { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
-    gap:1.4rem; text-align:center; padding:1rem; z-index:10; background:var(--void); transition:opacity .5s; }
-  .screen.hidden { opacity:0; pointer-events:none; }
-  h1 { font-size:1.45rem; letter-spacing:-.01em; }
-  .msg { color:var(--muted); font-size:.9rem; max-width:34rem; line-height:1.65; }
-  .status { font:600 .78rem ui-monospace,monospace; color:var(--accent); letter-spacing:.08em; }
-  .orb { position:relative; width:92px; height:92px; }
-  .ring { position:absolute; inset:0; border-radius:50%; border:2px solid transparent;
-    border-top-color:var(--primary); border-right-color:rgba(147,51,234,.3); animation:rot 1.1s linear infinite; }
-  .ring2 { inset:11px; border-top-color:var(--accent); animation-duration:1.7s; animation-direction:reverse; }
-  .core { position:absolute; inset:30px; border-radius:50%;
-    background:radial-gradient(circle,var(--primary-bright),var(--primary) 70%);
-    box-shadow:0 0 36px rgba(147,51,234,.9); animation:pulse 1.8s ease-in-out infinite; }
-  @keyframes rot { to { transform:rotate(360deg); } }
-  @keyframes pulse { 50% { transform:scale(.78); opacity:.75; } }
-  .err h2 { color:#f43f5e; font-size:1.2rem; margin-bottom:.4rem; }
-  .err p { color:var(--muted); font-size:.88rem; max-width:32rem; }
-  .err { display:none; }
-  .screen.error .orb, .screen.error h1, .screen.error .msg, .screen.error .status { display:none; }
-  .screen.error .err { display:flex; flex-direction:column; align-items:center; gap:1rem; }
-  button { padding:.75rem 1.4rem; border-radius:11px; border:none; cursor:pointer; font-weight:700;
-    color:#fff; background:linear-gradient(110deg,var(--primary),#7e22ce); font-size:.9rem; }
-  iframe { position:fixed; inset:0; width:100%; height:100%; border:none; background:#fff; }
-  .hint { position:fixed; bottom:10px; right:14px; color:var(--muted); font-size:.65rem; opacity:.6; z-index:20; }
-</style>
-</head>
-<body>
-  <div class="screen" id="s">
-    <div class="orb"><div class="ring"></div><div class="ring ring2"></div><div class="core"></div></div>
-    <h1>Initializing TaskFlow Relay</h1>
-    <p class="msg">The proxy backend is waking up. Since we're using Render's free tier, initial startup can take up to approximately one minute. Please wait.</p>
-    <p class="status" id="st">Contacting backend…</p>
-    <div class="err">
-      <h2>Relay could not start</h2>
-      <p id="em"></p>
-      <div style="display:flex;gap:.6rem">
-        <button onclick="location.reload()">Try again</button>
-        <button onclick="location.replace(RELAY_URL)" style="background:rgba(255,255,255,.06);border:1px solid var(--border)">Open relay directly</button>
-      </div>
-    </div>
-  </div>
-  <div class="hint">Tip: press \\ to close</div>
-<script>
-var BACKEND = ${JSON.stringify(BACKEND)};
-var RELAY_URL = ${JSON.stringify(RELAY_URL)};
-var WISP_URL = ${JSON.stringify((new URL(BACKEND).protocol === "https:" ? "wss://" : "ws://") + new URL(BACKEND).host + "/")};
-var s = document.getElementById("s"), st = document.getElementById("st"), em = document.getElementById("em");
-var cancelled = false;
-function fail(msg) { em.textContent = msg; s.classList.add("error"); }
-function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-async function waitForBackend(timeoutMs) {
-  var started = Date.now(), attempt = 0;
-  while (Date.now() - started < timeoutMs && !cancelled) {
-    attempt++;
-    var secs = Math.round((Date.now() - started) / 1000);
-    st.textContent = "Backend waking up… (attempt " + attempt + ", " + secs + "s elapsed)";
-    try {
-      var res = await fetch(BACKEND + "/health", { cache: "no-store" });
-      if (res.ok) { var j = await res.json(); if (j && j.ok) return true; }
-    } catch (e) {}
-    await sleep(3000);
-  }
-  return false;
-}
-async function start() {
-  var ok = await waitForBackend(180000);
-  if (!ok) return fail("The backend did not respond within 3 minutes. It may still be waking up on the Render free tier — try again in a minute.");
-  st.textContent = "Backend online — launching Relay…";
-  await sleep(350);
-  // Replace this loader entirely with the proxy browser.
-  document.title = "TaskFlow Relay";
-  document.open();
-  document.write('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">' +
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TaskFlow Relay</title>' +
-    '<style>html,body{height:100%;margin:0;background:#0b0b12}iframe{position:fixed;inset:0;width:100%;height:100%;border:none;background:#fff}</style>' +
-    '</head><body><iframe src="' + RELAY_URL + '" allow="fullscreen; autoplay; clipboard-read; clipboard-write; encrypted-media" allowfullscreen></iframe></body></html>');
-  document.close();
-}
-document.addEventListener("keydown", function (e) { if (e.key === "\\\\") { try { window.close(); } catch (err) {} } });
-start();
-<\/script>
-</body>
-</html>`;
-            }
+            /* Health-check in this tab (from this page's origin, so the
+               backend's CORS policy matches), then replace the entire
+               tab with the proxy browser. */
 
-            /* Popup path: about:blank context + iframe relay.html,
-               then completely remove the homepage from this tab. */
-            function launchViaPopup() {
-                let popup = null;
-                try {
-                    popup = window.open("about:blank", "_blank");
-                } catch (err) { popup = null; }
 
-                if (popup && !popup.closed && popup.document && typeof popup.document.write === "function") {
-                    try {
-                        const doc = popup.document;
-                        doc.open();
-                        doc.write(buildLauncherDoc());
-                        doc.close();
-                        // Completely replace the original homepage experience:
-                        // unload this document entirely (frees memory/CPU).
-                        window.location.replace("about:blank");
-                        return true;
-                    } catch (err) {
-                        try { popup.close(); } catch (e2) {}
-                    }
-                }
-                return false;
-            }
-
-            /* Fallback path (popup blocked): health-check in this tab,
-               then replace the entire tab with relay.html. */
             async function launchInline() {
                 overlay.classList.add('active');
                 launchStatus.textContent = 'Contacting backend…';
@@ -1225,9 +1093,8 @@ start();
                     ]);
                     return;
                 }
-                if (launchViaPopup()) return;
-                // Popup blocked — closest reliable alternative:
-                // run the wake-up here, then replace this tab entirely.
+                // Health-check the backend, then replace this tab
+                // entirely with the proxy browser.
                 launchInline();
             });
 
