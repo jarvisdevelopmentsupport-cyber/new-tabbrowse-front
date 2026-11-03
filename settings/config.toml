@@ -1,0 +1,35 @@
+# Configuration for wasmer/static-web-server, which serves the site on Wasmer Edge.
+# Files are served from /public (see Staticfile at the repo root).
+
+[general]
+
+#### Address & Root dir
+host = "::"
+port = 8080
+root = "/public"
+
+#### Logging
+log-level = "error"
+
+#### Cache Control headers
+# Disabled so config.js and sw.js are always fetched fresh (the app reads the
+# backend URL from config.js at load time). Enable again if you later add
+# fingerprinted assets.
+cache-control-headers = false
+
+#### Auto Compression
+compression = true
+
+#### Error pages
+# Note: If a relative path is used then it will be resolved under the root directory.
+page404 = "./404.html"
+page50x = "./50x.html"
+
+#### HTTP/2 + TLS
+# http2 = false
+# http2-tls-cert = ""
+# http2-tls-key = ""
+# https-redirect = false
+# https-redirect-host = "localhost"
+# https-redirect-from-port = 80
+# https-redirect-from-hosts = "localhost"
